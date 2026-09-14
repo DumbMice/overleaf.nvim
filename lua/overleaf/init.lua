@@ -1006,7 +1006,7 @@ function M.compile()
     if result.status == 'success' then
       config.log('info', 'Compile succeeded')
       -- Auto-download and open PDF
-      M._open_pdf(result.outputFiles or {})
+      M._open_pdf(result.outputFiles or {}, result.clsiServerId)
     else
       config.log('warn', 'Compile status: %s', result.status)
     end
@@ -1015,7 +1015,7 @@ function M.compile()
   end)
 end
 
-function M._open_pdf(output_files)
+function M._open_pdf(output_files, clsi_server_id)
   local pdf_file = nil
   for _, f in ipairs(output_files) do
     if f.path == 'output.pdf' then
@@ -1025,16 +1025,25 @@ function M._open_pdf(output_files)
   end
   if not pdf_file or not pdf_file.url then return end
 
+  -- Overleaf's CDN requires ?clsiserverid=<id> for build-output downloads;
+  -- without it the build URL returns 404.
+  local url = config.get().base_url .. pdf_file.url
+  if clsi_server_id then
+    url = url .. '?clsiserverid=' .. vim.uri_encode(clsi_server_id)
+  end
+
   bridge.request('downloadUrl', {
     cookie = config.get().cookie,
-    url = config.get().base_url .. pdf_file.url,
+    csrfToken = M._state.csrf_token,
+    url = url,
     fileName = (M._state.project_name or 'output') .. '.pdf',
     outputDir = config.get().pdf_dir,
   }, function(err, result)
     if err then
-      config.log('debug', 'PDF download failed: %s', err.message)
+      config.log('error', 'PDF download failed: %s', err.message)
       return
     end
+    config.log('info', 'Opening PDF: %s', result.path)
     vim.schedule(function() open_file(result.path) end)
   end)
 end

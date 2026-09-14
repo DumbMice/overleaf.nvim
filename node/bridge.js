@@ -119,16 +119,22 @@ const handlers = {
     const logFile = (parsed.outputFiles || []).find(f => f.path === 'output.log');
     let log = '';
     if (logFile) {
-      const logUrl = `${BASE_URL}${logFile.url}`;
+      const clsiQs = parsed.clsiServerId ? '?clsiserverid=' + encodeURIComponent(parsed.clsiServerId) : '';
+      const logUrl = `${BASE_URL}${logFile.url}${clsiQs}`;
       const logRes = await auth.httpGet(logUrl, cookie);
       log = logRes.body;
     }
 
-    return { status: parsed.status, outputFiles: parsed.outputFiles || [], log };
+    return {
+      status: parsed.status,
+      clsiServerId: parsed.clsiServerId,
+      outputFiles: parsed.outputFiles || [],
+      log,
+    };
   },
 
   async downloadUrl(params) {
-    const { cookie, url, fileName, outputDir } = params;
+    const { cookie, csrfToken, url, fileName, outputDir } = params;
     if (!cookie || !url) {
       throw { code: 'MISSING_PARAM', message: 'cookie and url are required' };
     }
@@ -138,21 +144,62 @@ const handlers = {
     fs.mkdirSync(dir, { recursive: true });
     const tmpPath = require('path').join(dir, 'overleaf_' + (fileName || 'download'));
 
-    await new Promise((resolve, reject) => {
-      const parsed = new URL(url);
+    const headers = {
+      'Cookie': cookie,
+      'X-Requested-With': 'XMLHttpRequest',
+      'Accept': 'application/pdf,application/json,*/*',
+    };
+    if (csrfToken) headers['X-Csrf-Token'] = csrfToken;
+
+    const fetchUrl = (target) => new Promise((resolve, reject) => {
+      const parsed = new URL(target);
       const httpModule = parsed.protocol === 'http:' ? require('http') : require('https');
-      httpModule.get({
+      const req = httpModule.get({
         hostname: parsed.hostname,
         port: parsed.port || (parsed.protocol === 'http:' ? 80 : 443),
         path: parsed.pathname + parsed.search,
-        headers: { 'Cookie': cookie },
+        headers,
       }, (res) => {
-        const ws = fs.createWriteStream(tmpPath);
-        res.pipe(ws);
-        ws.on('finish', () => { ws.close(); resolve(); });
-        ws.on('error', reject);
-      }).on('error', reject);
+        // Follow redirects (Overleaf compiled outputs may be served via a
+        // redirect to a signed storage URL whose body is empty).
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const loc = new URL(res.headers.location, target);
+          resolve(fetchUrl(loc.toString()));
+          return;
+        }
+        if (res.statusCode !== 200) {
+          reject(new Error('HTTP ' + res.statusCode + ' for ' + target));
+          return;
+        }
+        resolve(res);
+      });
+      req.on('error', reject);
+      req.setTimeout(30000, () => req.destroy(new Error('Request timeout')));
     });
+
+    const writeStream = (stream) => new Promise((resolve, reject) => {
+      const ws = fs.createWriteStream(tmpPath);
+      stream.pipe(ws);
+      ws.on('finish', () => { ws.close(); resolve(); });
+      ws.on('error', reject);
+    });
+
+    // Try the primary overleaf.com URL first; on failure fall back to the
+    // compiles.overleafusercontent.com host that Overleaf intermittently uses.
+    let res;
+    try {
+      res = await fetchUrl(url);
+    } catch (e) {
+      const parsed = new URL(url);
+      if (parsed.hostname.indexOf('overleafuser') === -1) {
+        const fallback = 'https://compiles.overleafusercontent.com' + parsed.pathname + parsed.search;
+        res = await fetchUrl(fallback);
+      } else {
+        throw e;
+      }
+    }
+
+    await writeStream(res);
 
     return { path: tmpPath };
   },

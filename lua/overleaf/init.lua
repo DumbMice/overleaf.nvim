@@ -10,7 +10,23 @@ local M = {}
 --- Open a file with the configured viewer or platform default
 ---@param file_path string
 local function open_file(file_path)
-  local viewer = config.get().pdf_viewer
+  -- Image files use the image viewer (default xdg-open); everything else
+  -- (PDFs, etc.) uses the pdf viewer or platform launcher.
+  local ext = file_path:match('%.([^.]+)$') or ''
+  ext = ext:lower()
+  local image_exts = {
+    png = true, jpg = true, jpeg = true, gif = true, bmp = true,
+    svg = true, webp = true, tiff = true, tif = true, ico = true,
+  }
+  local is_image = image_exts[ext] == true
+
+  local viewer
+  if is_image then
+    viewer = config.get().image_viewer or 'xdg-open'
+  else
+    viewer = config.get().pdf_viewer
+  end
+
   if viewer then
     -- User-configured viewer: run as background job to avoid disrupting cursor/window layout
     vim.fn.jobstart({ viewer, file_path }, { detach = true })
@@ -617,22 +633,32 @@ function M.preview_file()
     format_item = function(item) return item.path end,
   }, function(choice)
     if not choice then return end
+    M.open_binary_file(choice)
+  end)
+end
 
-    config.log('info', 'Downloading %s...', choice.name)
-    bridge.request('downloadFile', {
-      cookie = config.get().cookie,
-      projectId = M._state.project_id,
-      fileId = choice.id,
-      fileName = choice.name,
-      outputDir = config.get().pdf_dir,
-    }, function(err, result)
-      if err then
-        config.log('error', 'Download failed: %s', err.message)
-        return
-      end
-      config.log('info', 'Opening %s', result.path)
-      vim.schedule(function() open_file(result.path) end)
-    end)
+--- Download a binary file (image, etc.) and open it with the appropriate viewer
+---@param entry table project tree entry {id, name, path, type='file'}
+function M.open_binary_file(entry)
+  if not M._state.connected then
+    config.log('warn', 'Not connected. Run :Overleaf connect first.')
+    return
+  end
+
+  config.log('info', 'Downloading %s...', entry.name)
+  bridge.request('downloadFile', {
+    cookie = config.get().cookie,
+    projectId = M._state.project_id,
+    fileId = entry.id,
+    fileName = entry.name,
+    outputDir = config.get().pdf_dir,
+  }, function(err, result)
+    if err then
+      config.log('error', 'Download failed: %s', err.message)
+      return
+    end
+    config.log('info', 'Opening %s', result.path)
+    vim.schedule(function() open_file(result.path) end)
   end)
 end
 

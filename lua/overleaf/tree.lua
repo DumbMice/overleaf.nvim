@@ -142,7 +142,7 @@ function M._on_enter()
     -- Current window is now the editor — open_document sets buffer here
     require('overleaf').open_document(entry.id, entry.path)
   elseif entry.type == 'file' then
-    config.log('info', 'Binary files cannot be opened: %s', entry.name)
+    require('overleaf').open_binary_file(entry)
   end
   -- No-op for folders
 end

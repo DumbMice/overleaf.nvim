@@ -204,13 +204,29 @@ function httpPostMultipart(url, cookie, csrfToken, filePath, fileName) {
     const fileData = fs.readFileSync(filePath);
 
     // Build multipart body
+    // Overleaf's upload endpoint (services/web/app/.../ProjectUploadController.mjs)
+    // reads the filename from the text field `name`, NOT from the qqfile
+    // Content-Disposition filename. Its own web client
+    // (frontend/js/infrastructure/batch-file-uploader.ts) sends:
+    //   formData.append('qqfile', file, name)
+    //   formData.append('name', name)
+    //   formData.append('relativePath', relativePath)  // optional
+    // Without `name`, req.body.name is null and the server replies
+    // 422 invalid_filename. So send the qqfile binary part AND a `name` part.
     const parts = [];
     parts.push(`--${boundary}\r\n`);
     parts.push(`Content-Disposition: form-data; name="qqfile"; filename="${fileName}"\r\n`);
     parts.push(`Content-Type: application/octet-stream\r\n\r\n`);
     const header = Buffer.from(parts.join(''));
-    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([header, fileData, footer]);
+
+    const namePart = Buffer.from(
+      `\r\n--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="name"\r\n\r\n` +
+        `${fileName}\r\n`
+    );
+
+    const footer = Buffer.from(`--${boundary}--\r\n`);
+    const body = Buffer.concat([header, fileData, namePart, footer]);
 
     const options = {
       hostname: parsed.hostname,
